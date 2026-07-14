@@ -1,0 +1,6 @@
+.git
+.venv
+logs
+*.png
+.env
+mock_webhook_server.py

@@ -1,5 +1,7 @@
 #!/bin/bash
-# Wrapper para rodar o RPA diariamente via cron, com log por dia.
+# Wrapper para rodar o RPA manualmente/localmente com log por dia.
+# Em produção o agendamento é feito pelo scheduler.py rodando dentro do
+# container no Easypanel -- este script não é mais chamado por cron aqui.
 set -euo pipefail
 
 cd /home/poupe/rpa_qrcode
