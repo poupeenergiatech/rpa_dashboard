@@ -30,9 +30,15 @@ def job():
         logger.exception("Execução do RPA falhou")
 
 
+TZ = "America/Sao_Paulo"
+
 if __name__ == "__main__":
-    scheduler = BlockingScheduler(timezone="America/Sao_Paulo")
-    scheduler.add_job(job, CronTrigger(hour=23, minute=55))
+    scheduler = BlockingScheduler(timezone=TZ)
+    # timezone precisa ser passado explicitamente ao CronTrigger também:
+    # sem system tzdata configurado no container (Easypanel), o CronTrigger
+    # tenta detectar o fuso local via tzlocal e cai silenciosamente em UTC,
+    # ignorando o timezone do BlockingScheduler.
+    scheduler.add_job(job, CronTrigger(hour=23, minute=55, timezone=TZ))
     logger.info(
         "Scheduler iniciado — RPA agendado para todo dia às 23:55 (America/Sao_Paulo)"
     )
