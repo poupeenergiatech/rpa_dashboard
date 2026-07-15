@@ -1,6 +1,6 @@
 """
 Servidor local só para teste: simula /api/webhooks/scans do
-vendedores-dashboard-allpfit, valida o header X-Webhook-Secret e loga o
+vendedores-dashboard-allpfit, valida o header Authorization (Bearer) e loga o
 payload recebido. Não usar em produção — é apenas para validar o envio do
 RPA localmente antes de apontar para a URL real.
 """
@@ -18,8 +18,8 @@ EXPECTED_SECRET = os.environ["SCANS_WEBHOOK_SECRET"]
 
 @app.post("/api/webhooks/scans")
 def receive_scans():
-    secret = request.headers.get("X-Webhook-Secret")
-    if secret != EXPECTED_SECRET:
+    auth_header = request.headers.get("Authorization")
+    if auth_header != f"Bearer {EXPECTED_SECRET}":
         return jsonify({"error": "invalid secret"}), 401
 
     payload = request.get_json(force=True)

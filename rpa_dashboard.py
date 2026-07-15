@@ -173,7 +173,7 @@ def run():
     response = requests.post(
         WEBHOOK_URL,
         json=payload,
-        headers={"X-Webhook-Secret": WEBHOOK_SECRET},
+        headers={"Authorization": f"Bearer {WEBHOOK_SECRET}"},
         timeout=15,
     )
     print(f"POST {WEBHOOK_URL} -> {response.status_code}")
