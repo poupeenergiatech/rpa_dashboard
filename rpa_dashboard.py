@@ -19,6 +19,7 @@ units.name), em vez de tentar ler o SVG do gráfico.
 
 import json
 import os
+import re
 from collections import Counter
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
@@ -34,6 +35,10 @@ URL = "https://qrcode.allpfit.com.br/"
 CAMPAIGN_NAME = "Alle Energia"
 PERIOD_LABEL = "Hoje"
 TZ = ZoneInfo("America/Sao_Paulo")
+
+# "Vila Velha - ES (60%)" -> ("Vila Velha - ES", 60)
+PIE_LABEL_RE = re.compile(r"^(.*) \((\d+)%\)$")
+PIE_LABEL_TOLERANCE = 1  # pontos percentuais, para absorver arredondamento do Recharts
 
 EMAIL = os.environ["ALLPFIT_EMAIL"]
 PASSWORD = os.environ["ALLPFIT_PASSWORD"]
@@ -119,6 +124,34 @@ def run():
             if line.replace(".", "").isdigit():
                 cliques_hoje_card = int(line.replace(".", ""))
 
+        # 4b. Ler os rótulos do gráfico "Cliques por Origem" (pizza Recharts)
+        # diretamente do DOM. Os rótulos são <text class="recharts-pie-label-text">
+        # com um <tspan> tipo "Vila Velha - ES (60%)" — são nós SVG, então
+        # .inner_text() falha ("Node is not an HTMLElement"); .text_content()
+        # funciona. Usado abaixo como conferência cruzada por unidade contra o
+        # join local, para detectar registros perdidos/mal atribuídos que não
+        # mudam o total (por isso passam despercebidos pela checagem do total).
+        origem_card = page.locator("text=Cliques por Origem").locator(
+            "xpath=ancestor::*[contains(@class,'rounded')][1]"
+        ).first
+        pie_labels = origem_card.locator(
+            "xpath=.//*[contains(@class,'recharts-pie-label-text')]"
+        )
+        if cliques_hoje_card:
+            # O pie chart (Recharts) tem animação de entrada; os rótulos só
+            # existem no DOM depois dela terminar. Espera de verdade em vez
+            # de sleep fixo, senão a leitura corre e vem vazia.
+            try:
+                pie_labels.first.wait_for(state="attached", timeout=8000)
+            except Exception:
+                pass
+        chart_percent_by_unit = {}
+        for i in range(pie_labels.count()):
+            text = (pie_labels.nth(i).text_content() or "").strip()
+            m = PIE_LABEL_RE.match(text)
+            if m:
+                chart_percent_by_unit[m.group(1)] = int(m.group(2))
+
         page.screenshot(
             path="/home/poupe/rpa_qrcode/dashboard_hoje_alle_energia.png",
             full_page=True,
@@ -152,6 +185,39 @@ def run():
         raise RuntimeError(
             f"Divergência entre o card 'Cliques (Hoje)' ({cliques_hoje_card}) "
             f"e o total calculado via join ({total_campanha_hoje}) — "
+            "não enviando payload até isso ser investigado."
+        )
+
+    # 6. Conferência cruzada por unidade contra o gráfico "Cliques por Origem":
+    # o total pode bater mesmo se cliques individuais foram perdidos ou
+    # mal atribuídos (ex: qr_codes ainda não carregado -> "Origem
+    # desconhecida"), então checamos unidade a unidade contra os rótulos
+    # lidos do DOM do gráfico.
+    if chart_percent_by_unit and total_campanha_hoje > 0:
+        chart_units = set(chart_percent_by_unit)
+        computed_units = set(origem_counter)
+        if chart_units != computed_units:
+            raise RuntimeError(
+                "Divergência de unidades entre o gráfico 'Cliques por Origem' "
+                f"({sorted(chart_units)}) e o join local "
+                f"({sorted(computed_units)}) — não enviando payload até isso "
+                "ser investigado."
+            )
+        for unit_name, chart_percent in chart_percent_by_unit.items():
+            computed_percent = round(
+                origem_counter[unit_name] / total_campanha_hoje * 100
+            )
+            if abs(computed_percent - chart_percent) > PIE_LABEL_TOLERANCE:
+                raise RuntimeError(
+                    f"Divergência na unidade '{unit_name}': gráfico mostra "
+                    f"{chart_percent}%, join local calcula {computed_percent}% "
+                    f"({origem_counter[unit_name]}/{total_campanha_hoje}) — "
+                    "não enviando payload até isso ser investigado."
+                )
+    elif total_campanha_hoje > 0 and not chart_percent_by_unit:
+        raise RuntimeError(
+            "Join local encontrou cliques, mas o gráfico 'Cliques por Origem' "
+            "não exibiu nenhum rótulo — possível falha ao carregar o gráfico, "
             "não enviando payload até isso ser investigado."
         )
 
