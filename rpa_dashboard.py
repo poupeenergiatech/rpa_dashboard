@@ -150,7 +150,12 @@ def run():
             text = (pie_labels.nth(i).text_content() or "").strip()
             m = PIE_LABEL_RE.match(text)
             if m:
-                chart_percent_by_unit[m.group(1)] = int(m.group(2))
+                # .strip() no nome: já vimos units.name vir do Supabase com
+                # espaço sobrando (ex: "UBERLANDIA - MG "), que não bate
+                # contra o rótulo do gráfico e derruba a checagem cruzada
+                # abaixo por um espaço em branco. Normaliza os dois lados
+                # (aqui e no join local) para não travar por isso.
+                chart_percent_by_unit[m.group(1).strip()] = int(m.group(2))
 
         page.screenshot(
             path="/home/poupe/rpa_qrcode/dashboard_hoje_alle_energia.png",
@@ -177,7 +182,9 @@ def run():
         if qr_id not in campaign_qr_ids:
             continue
         qr_row = qr_codes_by_id.get(qr_id, {})
-        unit_name = (qr_row.get("units") or {}).get("name", "Origem desconhecida")
+        unit_name = (
+            (qr_row.get("units") or {}).get("name") or "Origem desconhecida"
+        ).strip()
         origem_counter[unit_name] += 1
 
     total_campanha_hoje = sum(origem_counter.values())
