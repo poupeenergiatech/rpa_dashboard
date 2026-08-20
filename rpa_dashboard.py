@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 load_dotenv()
@@ -91,7 +92,22 @@ def run():
         page.on("response", on_response)
 
         # 1. Login
-        page.goto(URL, wait_until="networkidle")
+        # wait_until="networkidle" aqui já causou timeout (20s) algumas
+        # vezes em produção: essa condição exige ZERO tráfego de rede na
+        # página inteira por 500ms, o que é frágil contra cold start do
+        # servidor/Supabase e tráfego de fundo (polling/realtime) -- pode
+        # nunca ser satisfeita mesmo com a rede saudável. Trocado por
+        # "domcontentloaded" (mais barato/confiável) + espera explícita
+        # pelo campo de login aparecer, com uma retentativa em caso de
+        # timeout na navegação em si (ex: origem lenta/instável).
+        for attempt in (1, 2):
+            try:
+                page.goto(URL, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_selector("#email", state="visible", timeout=30000)
+                break
+            except PlaywrightTimeoutError:
+                if attempt == 2:
+                    raise
         page.fill("#email", EMAIL)
         page.fill("#password", PASSWORD)
         page.click("text=Entrar")
