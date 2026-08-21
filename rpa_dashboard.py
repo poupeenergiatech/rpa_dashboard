@@ -18,8 +18,10 @@ units.name), em vez de tentar ler o SVG do gráfico.
 """
 
 import json
+import logging
 import os
 import re
+import time
 from collections import Counter
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
@@ -32,10 +34,20 @@ from playwright.sync_api import sync_playwright
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 URL = "https://qrcode.allpfit.com.br/"
 CAMPAIGN_NAME = "Alle Energia"
 PERIOD_LABEL = "Hoje"
 TZ = ZoneInfo("America/Sao_Paulo")
+
+# Tentativas de goto no login e pausas (segundos) entre elas. Em 2026-08-20
+# as 23:55 as duas tentativas anteriores (sem pausa entre elas) falharam
+# em sequencia, indicando uma indisponibilidade de origem que durou mais de
+# 60s -- mais tentativas com backoff dao mais chance de atravessar uma
+# instabilidade curta sem exigir intervencao manual.
+GOTO_MAX_ATTEMPTS = 4
+GOTO_BACKOFF_SECONDS = (10, 20, 40)
 
 # "Vila Velha - ES (60%)" -> ("Vila Velha - ES", 60)
 PIE_LABEL_RE = re.compile(r"^(.*) \((\d+)%\)$")
@@ -45,6 +57,22 @@ EMAIL = os.environ["ALLPFIT_EMAIL"]
 PASSWORD = os.environ["ALLPFIT_PASSWORD"]
 WEBHOOK_URL = os.environ["SCANS_WEBHOOK_URL"]
 WEBHOOK_SECRET = os.environ["SCANS_WEBHOOK_SECRET"]
+
+
+def _log_connectivity_diagnostic(url):
+    """Faz uma requisição HTTP simples (fora do Playwright) quando um goto
+    falha, só para logar mais contexto sobre a causa: se cair aqui também
+    (timeout/erro de conexão/DNS), aponta para indisponibilidade real da
+    origem/rede; se responder normalmente, aponta para algo específico do
+    Chromium headless (ex: challenge de bot management do Cloudflare)."""
+    try:
+        resp = requests.get(url, timeout=10)
+        logger.warning(
+            "Diagnóstico de conectividade: GET %s -> status %s (%d bytes)",
+            url, resp.status_code, len(resp.content),
+        )
+    except requests.RequestException as exc:
+        logger.warning("Diagnóstico de conectividade: GET %s falhou: %s", url, exc)
 
 
 def run():
@@ -98,16 +126,29 @@ def run():
         # servidor/Supabase e tráfego de fundo (polling/realtime) -- pode
         # nunca ser satisfeita mesmo com a rede saudável. Trocado por
         # "domcontentloaded" (mais barato/confiável) + espera explícita
-        # pelo campo de login aparecer, com uma retentativa em caso de
-        # timeout na navegação em si (ex: origem lenta/instável).
-        for attempt in (1, 2):
+        # pelo campo de login aparecer, com retentativas com backoff em
+        # caso de timeout na navegação em si (ex: origem lenta/instável/
+        # fora do ar por mais de 30s -- já aconteceu em produção com as
+        # duas tentativas antigas, sem pausa entre elas, falhando em
+        # sequência). A cada falha loga um diagnóstico de conectividade
+        # (ver _log_connectivity_diagnostic) para dar mais pista da causa
+        # na próxima ocorrência.
+        for attempt in range(1, GOTO_MAX_ATTEMPTS + 1):
             try:
                 page.goto(URL, wait_until="domcontentloaded", timeout=30000)
                 page.wait_for_selector("#email", state="visible", timeout=30000)
                 break
             except PlaywrightTimeoutError:
-                if attempt == 2:
+                logger.warning(
+                    "Timeout ao carregar %s (tentativa %d/%d)",
+                    URL, attempt, GOTO_MAX_ATTEMPTS,
+                )
+                _log_connectivity_diagnostic(URL)
+                if attempt == GOTO_MAX_ATTEMPTS:
                     raise
+                wait_s = GOTO_BACKOFF_SECONDS[attempt - 1]
+                logger.info("Aguardando %ds antes de tentar de novo", wait_s)
+                time.sleep(wait_s)
         page.fill("#email", EMAIL)
         page.fill("#password", PASSWORD)
         page.click("text=Entrar")
